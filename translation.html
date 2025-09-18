@@ -75,7 +75,7 @@
         <div>
           <div class="small">Supported blocks</div>
           <div class="pill">[[if var]] [[elif var]] [[else]] [[endif]]</div>
-          <div class="pill" style="margin-top:6px">[[one_of: A|B|C]] → ~ helpers.one_of("A,B,C") ~</div>
+          <div class="pill" style="margin-top:6px">[[one_of: A|B|C]] → {{ helpers.one_of("A,B,C") }}</div>
         </div>
       </div>
       <div class="line"></div>
@@ -93,7 +93,7 @@ const ALLOWED_FILTERS = new Set(["upper","lower","title","capitalize"]);
 
 // one_of output mode
 const ONE_OF_MODE = "comma_string"; // "comma_string" or "variadic"
-const ONE_OF_WRAP = "concat";       // "concat" ( ~ ... ~ ) or "print" ( {{ ... }})
+const ONE_OF_WRAP = "print";       // "concat" ( ~ ... ~ ) or "print" ( {{ ... }})
 
 // --- DOM ---
 const dslEl = document.getElementById('dsl');
