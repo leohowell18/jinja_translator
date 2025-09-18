@@ -25,6 +25,7 @@
     .status.ok{color:var(--ok)} .status.bad{color:var(--bad)}
     .grid-sm{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
     .pill{padding:6px 10px;background:#0e1521;border:1px solid #223148;border-radius:999px}
+    #varList, #filterList{display:flex;flex-wrap:wrap;gap:6px}
     .line{height:1px;background:#1e2838;margin:12px 0}
     .sr{position:absolute;left:-9999px}
   </style>
@@ -47,7 +48,7 @@
           <button id="btnChoice">Insert Choice List</button>
           <button id="btnNormalize" class="ghost" title="Fix smart quotes/dashes">Normalize text</button>
         </div>
-        <textarea id="dsl" placeholder="Example:\nIt's [[score]] at halftime, with the [[home_team_nickname]] leading.\n[[if favorite_team]]Go team![[endif]]\nTry: [[one_of: IN THE LEAD 💪|OUT IN FRONT 🔥|IN THE DRIVER'S SEAT 🚗]]"></textarea>
+        <textarea id="dsl" placeholder="Example:\nIt's [[score]] at halftime, with the [[home_team_nickname]] leading.\n[[if favorite_team]]Go team![[endif]]\nTry: [[one_of: LEAD AT HALF|AHEAD AT HALF|UP AT HALF]]"></textarea>
         <div class="status" id="lintStatus"></div>
       </section>
 
@@ -57,7 +58,7 @@
           <button id="btnCopy">Copy</button>
         </div>
         <pre id="jinjaOut" aria-label="Jinja output"></pre>
-        <div class="small">Unknown variables are highlighted as <span class="badge">{{ unknown_var }}</span> in lint results only; the translation still proceeds.</div>
+        <div class="small">Unknown variables are highlighted in lint results only; the translation still proceeds.</div>
       </section>
     </div>
 
@@ -74,22 +75,25 @@
         <div>
           <div class="small">Supported blocks</div>
           <div class="pill">[[if var]] [[elif var]] [[else]] [[endif]]</div>
-          <div class="pill" style="margin-top:6px">[[one_of: A|B|C]] → {{ helpers.one_of("A","B","C") }}</div>
+          <div class="pill" style="margin-top:6px">[[one_of: A|B|C]] → ~ helpers.one_of("A,B,C") ~</div>
         </div>
       </div>
       <div class="line"></div>
-      <div class="small">Tip: paste from Google Docs/Slack, then click <b>Normalize</b> before translating. The output is parsed by simple rules; final validation should still run in CI with the real Jinja parser.</div>
+      <div class="small">Tip: paste from Google Docs/Slack, then click <b>Normalize</b> before translating. Final validation should still run in CI with the real Jinja parser.</div>
     </div>
   </div>
 
 <script>
 // --- Configuration (edit here) ---
 const ALLOWED_VARIABLES = [
-  // 👇 Replace this list with your own tokens; it powers the picker and linting
   "home_team_code","home_team_nickname","away_team_nickname","score",
   "favorite_team","helpers","user_name","cohort_id","cohort_name"
 ];
 const ALLOWED_FILTERS = new Set(["upper","lower","title","capitalize"]);
+
+// one_of output mode
+const ONE_OF_MODE = "comma_string"; // "comma_string" or "variadic"
+const ONE_OF_WRAP = "concat";       // "concat" ( ~ ... ~ ) or "print" ( {{ ... }})
 
 // --- DOM ---
 const dslEl = document.getElementById('dsl');
@@ -99,7 +103,6 @@ const varPicker = document.getElementById('varPicker');
 const varList = document.getElementById('varList');
 const filterList = document.getElementById('filterList');
 
-// Populate variable picker and display lists
 function initVars(){
   varPicker.innerHTML = ALLOWED_VARIABLES.map(v=>`<option value="${v}">${v}</option>`).join('');
   varList.innerHTML = ALLOWED_VARIABLES.map(v=>`<span class="pill">[[${v}]]</span>`).join(' ');
@@ -107,15 +110,15 @@ function initVars(){
 }
 initVars();
 
-// --- Helpers ---
 function normalize(text){
   return text
-    .replaceAll('\u2019', "'") // ’
-    .replaceAll('\u2018', "'") // ‘
-    .replaceAll('\u201c', '"') // “
-    .replaceAll('\u201d', '"') // ”
-    .replaceAll('\u2014', '-')  // —
-    .replaceAll('\u2013', '-')  // –
+    .replaceAll('\u2019', "'")
+    .replaceAll('\u2018', "'")
+    .replaceAll('\u201c', '"')
+    .replaceAll('\u201d', '"')
+    .replaceAll('\u2014', '-')
+    .replaceAll('\u2013', '-')
+    .replace(/\r/g,'')
     .replace(/[\t\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');
 }
 
@@ -123,17 +126,26 @@ function escapeForDoubleQuotes(s){
   return s.replaceAll('\\', '\\\\').replaceAll('"','\\"');
 }
 
-// Replace DSL tokens with Jinja
 function dslToJinja(dsl){
   let s = normalize(dsl);
 
   // [[one_of: a|b|c]]
   s = s.replace(/\[\[\s*(?:one_of|choice)\s*:\s*([^\]]+?)\s*\]\]/g, (_, list)=>{
-    const parts = list.split('|').map(x=>`"${escapeForDoubleQuotes(x.trim())}"`).join(',');
-    return `{{ helpers.one_of(${parts}) }}`;
+    const options = list.split('|').map(x => x.trim());
+    const escaped = options.map(o => escapeForDoubleQuotes(o));
+
+    let args;
+    if (ONE_OF_MODE === "comma_string") {
+      args = `\"${escaped.join(",")}\"`;
+    } else {
+      args = escaped.map(o => `\"${o}\"`).join(',');
+    }
+
+    const call = `helpers.one_of(${args})`;
+    return ONE_OF_WRAP === "concat" ? ` ~ ${call} ~ ` : `{{ ${call} }}`;
   });
 
-  // [[if var]] / [[elif var]] / [[else]] / [[endif]]
+  // control flow
   s = s.replace(/\[\[\s*if\s+([a-zA-Z0-9_\.]+)\s*\]\]/g, '{% if $1 %}');
   s = s.replace(/\[\[\s*elif\s+([a-zA-Z0-9_\.]+)\s*\]\]/g, '{% elif $1 %}');
   s = s.replace(/\[\[\s*else\s*\]\]/g, '{% else %}');
@@ -142,7 +154,6 @@ function dslToJinja(dsl){
   // [[var|filter]] or [[var]]
   s = s.replace(/\[\[\s*([a-zA-Z0-9_]+)(?:\|([a-zA-Z0-9_]+))?\s*\]\]/g, (_, v, f)=>{
     if (f && !ALLOWED_FILTERS.has(f)) {
-      // keep filter text but flag in lint; translation still proceeds
       return `{{ ${v}|${f} }}`;
     }
     return f ? `{{ ${v}|${f} }}` : `{{ ${v} }}`;
@@ -151,7 +162,6 @@ function dslToJinja(dsl){
   return s;
 }
 
-// Lint pass: unmatched if/endif, unknown variables
 function lint(dsl){
   const lines = normalize(dsl).split(/\n/);
   const stack = [];
@@ -166,12 +176,10 @@ function lint(dsl){
 
   lines.forEach((line, idx)=>{
     const n = idx+1;
-    // control flow
     for (const _m of line.matchAll(ifRe)) stack.push({line:n});
     for (const _m of line.matchAll(endifRe)) {
       if (!stack.length) problems.push(`Line ${n}: stray [[endif]]`); else stack.pop();
     }
-    // vars/filters
     for (const m of line.matchAll(varRe)){
       const v = m[1]; const f = m[2];
       if (!ALLOWED_VARIABLES.includes(v)) unknownVars.add(v);
@@ -184,7 +192,6 @@ function lint(dsl){
   return { problems, unknownVars: Array.from(unknownVars).sort() };
 }
 
-// UI actions
 function translate(){
   const src = dslEl.value;
   const jinja = dslToJinja(src);
@@ -206,9 +213,7 @@ function renderLint(){
   statusEl.textContent = parts.join(' | ');
 }
 
-// Buttons
 document.getElementById('btnTranslate').onclick = translate;
-
 document.getElementById('btnCopy').onclick = async ()=>{
   const text = outEl.textContent;
   try{ await navigator.clipboard.writeText(text); 
@@ -220,20 +225,13 @@ document.getElementById('btnCopy').onclick = async ()=>{
 document.getElementById('btnInsertVar').onclick = ()=>{
   const v = varPicker.value; insertAtCursor(dslEl, `[[${v}]]`); renderLint();
 };
-
 document.getElementById('btnIf').onclick = ()=>{ insertAtCursor(dslEl, '[[if SOME_FLAG]]'); renderLint(); };
-
 document.getElementById('btnElif').onclick = ()=>{ insertAtCursor(dslEl, '[[elif OTHER_FLAG]]'); renderLint(); };
-
 document.getElementById('btnElse').onclick = ()=>{ insertAtCursor(dslEl, '[[else]]'); renderLint(); };
-
 document.getElementById('btnEndIf').onclick = ()=>{ insertAtCursor(dslEl, '[[endif]]'); renderLint(); };
-
 document.getElementById('btnChoice').onclick = ()=>{ insertAtCursor(dslEl, '[[one_of: Option A|Option B|Option C]]'); };
-
 document.getElementById('btnNormalize').onclick = ()=>{ dslEl.value = normalize(dslEl.value); renderLint(); };
 
-// live lint debounce
 let t; dslEl.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(renderLint, 200); });
 
 function insertAtCursor(textarea, text){
@@ -246,7 +244,6 @@ function insertAtCursor(textarea, text){
   textarea.setSelectionRange(pos,pos); textarea.focus();
 }
 
-// Initial render
 renderLint();
 </script>
 </body>
