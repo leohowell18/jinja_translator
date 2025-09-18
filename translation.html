@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jinja2 Copy Helper</title>
+  <style>
+    :root { --bg:#0b0f14; --fg:#e7edf3; --muted:#b6c2cf; --card:#111824; --accent:#4da3ff; --bad:#ff6b6b; --ok:#2ecc71; }
+    html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial}
+    .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+    h1{font-size:20px;margin:0 0 8px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .card{background:var(--card);border:1px solid #1b2432;border-radius:12px;padding:14px}
+    .toolbar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+    .toolbar > * {font-size:14px}
+    button, select {background:#1a2230;color:var(--fg);border:1px solid #283247;border-radius:10px;padding:8px 10px;cursor:pointer}
+    button.primary{background:var(--accent);color:#00152b;border-color:transparent}
+    button.ghost{background:transparent}
+    textarea, pre, input[type="text"]{width:100%;min-height:220px;background:#0e1521;color:var(--fg);border:1px solid #1f2a3c;border-radius:10px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    pre{min-height:220px;white-space:pre-wrap}
+    .small{font-size:12px;color:var(--muted)}
+    .badge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;border:1px solid #243249;background:#0e1521;color:var(--muted);font-size:12px}
+    .status{display:flex;gap:8px;align-items:center;margin:8px 0 0}
+    .status.ok{color:var(--ok)} .status.bad{color:var(--bad)}
+    .grid-sm{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+    .pill{padding:6px 10px;background:#0e1521;border:1px solid #223148;border-radius:999px}
+    .line{height:1px;background:#1e2838;margin:12px 0}
+    .sr{position:absolute;left:-9999px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Jinja2 Copy Helper</h1>
+    <div class="small">Type copy using a tiny writer‑friendly syntax. Click <b>Translate</b> to get safe Jinja. Use the pickers to insert variables or control blocks. Nothing is saved.</div>
+
+    <div class="row" style="margin-top:12px">
+      <section class="card">
+        <div class="toolbar">
+          <label class="sr" for="varPicker">Insert variable</label>
+          <select id="varPicker"></select>
+          <button id="btnInsertVar" title="Insert selected variable">Insert variable</button>
+          <button id="btnIf">Insert IF</button>
+          <button id="btnElif">Insert ELIF</button>
+          <button id="btnElse">Insert ELSE</button>
+          <button id="btnEndIf">Insert ENDIF</button>
+          <button id="btnChoice">Insert Choice List</button>
+          <button id="btnNormalize" class="ghost" title="Fix smart quotes/dashes">Normalize text</button>
+        </div>
+        <textarea id="dsl" placeholder="Example:\nIt's [[score]] at halftime, with the [[home_team_nickname]] leading.\n[[if favorite_team]]Go team![[endif]]\nTry: [[one_of: IN THE LEAD 💪|OUT IN FRONT 🔥|IN THE DRIVER'S SEAT 🚗]]"></textarea>
+        <div class="status" id="lintStatus"></div>
+      </section>
+
+      <section class="card">
+        <div class="toolbar">
+          <button id="btnTranslate" class="primary">Translate → Jinja2</button>
+          <button id="btnCopy">Copy</button>
+        </div>
+        <pre id="jinjaOut" aria-label="Jinja output"></pre>
+        <div class="small">Unknown variables are highlighted as <span class="badge">{{ unknown_var }}</span> in lint results only; the translation still proceeds.</div>
+      </section>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="grid-sm">
+        <div>
+          <div class="small">Allowed variables (editable in code)</div>
+          <div id="varList"></div>
+        </div>
+        <div>
+          <div class="small">Allowed filters</div>
+          <div id="filterList"></div>
+        </div>
+        <div>
+          <div class="small">Supported blocks</div>
+          <div class="pill">[[if var]] [[elif var]] [[else]] [[endif]]</div>
+          <div class="pill" style="margin-top:6px">[[one_of: A|B|C]] → {{ helpers.one_of("A","B","C") }}</div>
+        </div>
+      </div>
+      <div class="line"></div>
+      <div class="small">Tip: paste from Google Docs/Slack, then click <b>Normalize</b> before translating. The output is parsed by simple rules; final validation should still run in CI with the real Jinja parser.</div>
+    </div>
+  </div>
+
+<script>
+// --- Configuration (edit here) ---
+const ALLOWED_VARIABLES = [
+  // 👇 Replace this list with your own tokens; it powers the picker and linting
+  "home_team_code","home_team_nickname","away_team_nickname","score",
+  "favorite_team","helpers","user_name","cohort_id","cohort_name"
+];
+const ALLOWED_FILTERS = new Set(["upper","lower","title","capitalize"]);
+
+// --- DOM ---
+const dslEl = document.getElementById('dsl');
+const outEl = document.getElementById('jinjaOut');
+const statusEl = document.getElementById('lintStatus');
+const varPicker = document.getElementById('varPicker');
+const varList = document.getElementById('varList');
+const filterList = document.getElementById('filterList');
+
+// Populate variable picker and display lists
+function initVars(){
+  varPicker.innerHTML = ALLOWED_VARIABLES.map(v=>`<option value="${v}">${v}</option>`).join('');
+  varList.innerHTML = ALLOWED_VARIABLES.map(v=>`<span class="pill">[[${v}]]</span>`).join(' ');
+  filterList.innerHTML = Array.from(ALLOWED_FILTERS).map(f=>`<span class="pill">|${f}</span>`).join(' ');
+}
+initVars();
+
+// --- Helpers ---
+function normalize(text){
+  return text
+    .replaceAll('\u2019', "'") // ’
+    .replaceAll('\u2018', "'") // ‘
+    .replaceAll('\u201c', '"') // “
+    .replaceAll('\u201d', '"') // ”
+    .replaceAll('\u2014', '-')  // —
+    .replaceAll('\u2013', '-')  // –
+    .replace(/[\t\x00-\x08\x0B\x0C\x0E-\x1F]/g,'');
+}
+
+function escapeForDoubleQuotes(s){
+  return s.replaceAll('\\', '\\\\').replaceAll('"','\\"');
+}
+
+// Replace DSL tokens with Jinja
+function dslToJinja(dsl){
+  let s = normalize(dsl);
+
+  // [[one_of: a|b|c]]
+  s = s.replace(/\[\[\s*(?:one_of|choice)\s*:\s*([^\]]+?)\s*\]\]/g, (_, list)=>{
+    const parts = list.split('|').map(x=>`"${escapeForDoubleQuotes(x.trim())}"`).join(',');
+    return `{{ helpers.one_of(${parts}) }}`;
+  });
+
+  // [[if var]] / [[elif var]] / [[else]] / [[endif]]
+  s = s.replace(/\[\[\s*if\s+([a-zA-Z0-9_\.]+)\s*\]\]/g, '{% if $1 %}');
+  s = s.replace(/\[\[\s*elif\s+([a-zA-Z0-9_\.]+)\s*\]\]/g, '{% elif $1 %}');
+  s = s.replace(/\[\[\s*else\s*\]\]/g, '{% else %}');
+  s = s.replace(/\[\[\s*endif\s*\]\]/g, '{% endif %}');
+
+  // [[var|filter]] or [[var]]
+  s = s.replace(/\[\[\s*([a-zA-Z0-9_]+)(?:\|([a-zA-Z0-9_]+))?\s*\]\]/g, (_, v, f)=>{
+    if (f && !ALLOWED_FILTERS.has(f)) {
+      // keep filter text but flag in lint; translation still proceeds
+      return `{{ ${v}|${f} }}`;
+    }
+    return f ? `{{ ${v}|${f} }}` : `{{ ${v} }}`;
+  });
+
+  return s;
+}
+
+// Lint pass: unmatched if/endif, unknown variables
+function lint(dsl){
+  const lines = normalize(dsl).split(/\n/);
+  const stack = [];
+  const problems = [];
+  const unknownVars = new Set();
+
+  const ifRe = /\[\[\s*if\s+([a-zA-Z0-9_\.]+)\s*\]\]/g;
+  const elifRe = /\[\[\s*elif\s+([a-zA-Z0-9_\.]+)\s*\]\]/g;
+  const elseRe = /\[\[\s*else\s*\]\]/g;
+  const endifRe = /\[\[\s*endif\s*\]\]/g;
+  const varRe = /\[\[\s*([a-zA-Z0-9_]+)(?:\|([a-zA-Z0-9_]+))?\s*\]\]/g;
+
+  lines.forEach((line, idx)=>{
+    const n = idx+1;
+    // control flow
+    for (const _m of line.matchAll(ifRe)) stack.push({line:n});
+    for (const _m of line.matchAll(endifRe)) {
+      if (!stack.length) problems.push(`Line ${n}: stray [[endif]]`); else stack.pop();
+    }
+    // vars/filters
+    for (const m of line.matchAll(varRe)){
+      const v = m[1]; const f = m[2];
+      if (!ALLOWED_VARIABLES.includes(v)) unknownVars.add(v);
+      if (f && !ALLOWED_FILTERS.has(f)) problems.push(`Line ${n}: filter '${f}' is not allowed`);
+    }
+  });
+
+  if (stack.length) problems.push(`Missing [[endif]] for ${stack.length} [[if]] block(s)`);
+
+  return { problems, unknownVars: Array.from(unknownVars).sort() };
+}
+
+// UI actions
+function translate(){
+  const src = dslEl.value;
+  const jinja = dslToJinja(src);
+  outEl.textContent = jinja;
+  renderLint();
+}
+
+function renderLint(){
+  const { problems, unknownVars } = lint(dslEl.value);
+  if (!problems.length && !unknownVars.length){
+    statusEl.className = 'status ok';
+    statusEl.textContent = '✅ Looks good';
+    return;
+  }
+  statusEl.className = 'status bad';
+  const parts = [];
+  if (problems.length) parts.push('Issues: '+problems.join(' • '));
+  if (unknownVars.length) parts.push('Unknown vars: '+unknownVars.map(v=>`[[${v}]]`).join(', '));
+  statusEl.textContent = parts.join(' | ');
+}
+
+// Buttons
+document.getElementById('btnTranslate').onclick = translate;
+
+document.getElementById('btnCopy').onclick = async ()=>{
+  const text = outEl.textContent;
+  try{ await navigator.clipboard.writeText(text); 
+    document.getElementById('btnCopy').textContent = 'Copied!';
+    setTimeout(()=>document.getElementById('btnCopy').textContent = 'Copy', 900);
+  }catch{ alert('Copy failed'); }
+};
+
+document.getElementById('btnInsertVar').onclick = ()=>{
+  const v = varPicker.value; insertAtCursor(dslEl, `[[${v}]]`); renderLint();
+};
+
+document.getElementById('btnIf').onclick = ()=>{ insertAtCursor(dslEl, '[[if SOME_FLAG]]'); renderLint(); };
+
+document.getElementById('btnElif').onclick = ()=>{ insertAtCursor(dslEl, '[[elif OTHER_FLAG]]'); renderLint(); };
+
+document.getElementById('btnElse').onclick = ()=>{ insertAtCursor(dslEl, '[[else]]'); renderLint(); };
+
+document.getElementById('btnEndIf').onclick = ()=>{ insertAtCursor(dslEl, '[[endif]]'); renderLint(); };
+
+document.getElementById('btnChoice').onclick = ()=>{ insertAtCursor(dslEl, '[[one_of: Option A|Option B|Option C]]'); };
+
+document.getElementById('btnNormalize').onclick = ()=>{ dslEl.value = normalize(dslEl.value); renderLint(); };
+
+// live lint debounce
+let t; dslEl.addEventListener('input', ()=>{ clearTimeout(t); t=setTimeout(renderLint, 200); });
+
+function insertAtCursor(textarea, text){
+  const start = textarea.selectionStart || 0;
+  const end = textarea.selectionEnd || 0;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+  textarea.value = before + text + after;
+  const pos = start + text.length;
+  textarea.setSelectionRange(pos,pos); textarea.focus();
+}
+
+// Initial render
+renderLint();
+</script>
+</body>
+</html>
